@@ -4,98 +4,150 @@ import sqlite3
 from datetime import datetime, timedelta
 import plotly.express as px
 
-# --- CONFIGURATION & STYLE ---
-st.set_page_config(page_title="FLOW | Discipline", layout="wide")
+# --- 1. CONFIGURATION & STYLE (Mode Deep Work) ---
+st.set_page_config(page_title="FLOW | OS", layout="wide", initial_sidebar_state="collapsed")
+
 st.markdown("""
     <style>
-    .main { background-color: #0e1117; }
-    .stMetric { background-color: #1f2937; padding: 15px; border-radius: 10px; border: 1px solid #374151; }
+    /* Fond très sombre pour réduire la fatigue visuelle */
+    .stApp { background-color: #0B0E14; color: #E2E8F0; }
+    
+    /* Cartes de métriques style Dashboard F1 */
+    div[data-testid="metric-container"] {
+        background-color: #151A23; 
+        border: 1px solid #2D3748; 
+        padding: 20px; 
+        border-radius: 8px; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+    }
+    
+    /* Boutons d'action : Minimalistes avec accent Néon */
+    .stButton>button { 
+        border: 1px solid #00E676; 
+        color: #00E676; 
+        background-color: transparent; 
+        transition: all 0.3s ease; 
+        width: 100%;
+    }
+    .stButton>button:hover { 
+        background-color: #00E676; 
+        color: #000; 
+        border-color: #00E676;
+    }
     </style>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-# --- DATABASE SETUP ---
+# --- 2. GESTION DE LA BASE DE DONNÉES ---
+DB_NAME = "flow_master.db"
+
 def init_db():
-    conn = sqlite3.connect('flow_data.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS sessions 
-                 (id INTEGER PRIMARY KEY, date TEXT, task TEXT, duration INTEGER, intensity INTEGER, score REAL)''')
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS flow_sessions 
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                         date TEXT, task TEXT, duration INTEGER, intensity INTEGER, score REAL)''')
 
 def add_session(task, duration, intensity):
-    score = (duration * intensity) / 10
-    date = datetime.now().strftime("%Y-%m-%d")
-    conn = sqlite3.connect('flow_data.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO sessions (date, task, duration, intensity, score) VALUES (?, ?, ?, ?, ?)",
-              (date, task, duration, intensity, score))
-    conn.commit()
-    conn.close()
+    # Le score récompense la durée ET l'intensité exponentiellement
+    score = (duration / 60) * (intensity ** 1.5) * 5 
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("INSERT INTO flow_sessions (date, task, duration, intensity, score) VALUES (?, ?, ?, ?, ?)",
+                     (date_str, task, duration, intensity, round(score, 1)))
+
+def get_data():
+    with sqlite3.connect(DB_NAME) as conn:
+        df = pd.read_sql_query("SELECT * FROM flow_sessions", conn)
+    return df
 
 init_db()
 
-# --- INTERFACE ---
-st.title("🌊 FLOW : Dashboard de Performance")
+# --- 3. INTERFACE UTILISATEUR ---
+st.title("⚡ FLOW : Système de Performance")
+st.markdown("*Discipline. Focus. Résultats.*")
+st.write("---")
 
-# Sidebar pour l'ajout
-with st.sidebar:
-    st.header("⚡ Nouvelle Session")
-    task = st.text_input("Nom de la tâche", placeholder="ex: Deep Work Python")
-    dur = st.number_input("Durée (min)", min_value=1, value=60)
-    inte = st.select_slider("Intensité / Focus", options=[1, 2, 3, 4, 5], value=3)
+# Création des onglets pour une navigation d'application mobile
+tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "🎯 Saisir une Session", "⚙️ Gérer les Données"])
+
+# --- ONGLET 1 : DASHBOARD ---
+with tab1:
+    df = get_data()
     
-    if st.button("Enregistrer la session", use_container_width=True):
-        if task:
-            add_session(task, dur, inte)
-            st.success("Session validée !")
+    if not df.empty:
+        df['date'] = pd.to_datetime(df['date'])
+        # Filtre strict sur les 7 derniers jours
+        last_7_days = pd.to_datetime(datetime.now().date() - timedelta(days=7))
+        df_week = df[df['date'] >= last_7_days].copy()
+
+        # Calculs (Correction du bug de formatage ici : .1f)
+        total_hours = df_week['duration'].sum() / 60
+        total_score = df_week['score'].sum()
+        avg_intensity = df_week['intensity'].mean() if not df_week.empty else 0
+
+        # Affichage des KPIs
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Temps Focus (7j)", f"{total_hours:.1f} h")
+        c2.metric("Score Deep Work (7j)", f"{total_score:.0f} pts")
+        c3.metric("Intensité Moy. (7j)", f"{avg_intensity:.1f} / 5")
+
+        st.write("<br>", unsafe_allow_html=True)
+        st.subheader("📈 Évolution de la productivité")
+        
+        if not df_week.empty:
+            # Groupement par jour pour le graphique
+            daily_stats = df_week.groupby(df_week['date'].dt.strftime('%Y-%m-%d'))['score'].sum().reset_index()
+            
+            # Graphique Plotly optimisé
+            fig = px.bar(daily_stats, x='date', y='score', text='score',
+                         color_discrete_sequence=['#00E676'])
+            fig.update_layout(
+                template="plotly_dark", 
+                plot_bgcolor='rgba(0,0,0,0)', 
+                paper_bgcolor='rgba(0,0,0,0)',
+                xaxis_title="Date", 
+                yaxis_title="Score de Focus",
+                margin=dict(l=0, r=0, t=30, b=0)
+            )
+            fig.update_traces(textposition='outside')
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.error("Donne un nom à la tâche")
+            st.info("Aucune donnée enregistrée sur les 7 derniers jours.")
+    else:
+        st.info("Ta base de données est vide. Passe à l'onglet 'Saisir une Session'.")
 
-# --- RÉCUPÉRATION DES DONNÉES ---
-conn = sqlite3.connect('flow_data.db')
-df = pd.read_sql_query("SELECT * FROM sessions", conn)
-conn.close()
+# --- ONGLET 2 : NOUVELLE SESSION ---
+with tab2:
+    st.subheader("Enregistrer du Deep Work")
+    with st.form("add_session_form", clear_on_submit=True):
+        col_a, col_b = st.columns(2)
+        task_name = col_a.text_input("Objectif accompli", placeholder="Ex: Montage vidéo / Code")
+        task_duration = col_b.number_input("Durée (minutes)", min_value=5, max_value=480, value=60, step=5)
+        
+        st.write("Niveau d'intensité")
+        task_intensity = st.slider("1 = Distrait | 5 = État de Flow absolu", 1, 5, 4, label_visibility="collapsed")
+        
+        submitted = st.form_submit_button("🔥 Valider la session")
+        
+        if submitted:
+            if task_name.strip():
+                add_session(task_name, task_duration, task_intensity)
+                st.success("Session enregistrée ! (Actualise ou change d'onglet pour voir les stats)")
+            else:
+                st.error("Tu dois donner un nom à ta tâche.")
 
-if not df.empty:
-    df['date'] = pd.to_datetime(df['date'])
+# --- ONGLET 3 : GESTION (CRUD) ---
+with tab3:
+    st.subheader("Contrôle de la Base de Données")
+    st.write("Double-clique sur une case pour modifier une erreur. Sélectionne la ligne à gauche et appuie sur 'Supprimer' (Delete) pour l'effacer.")
     
-    # Filtrer sur les 7 derniers jours
-    last_7_days = datetime.now() - timedelta(days=7)
-    df_week = df[df['date'] >= last_7_days].sort_values('date')
-
-    # --- METRICS ---
-    col1, col2, col3 = st.columns(3)
-    total_score = df_week['score'].sum()
-    total_hours = df_week['duration'].sum() / 60
-    
-    col1.metric("Score Hebdo", f"{total_score:.0f} pts")
-    col2.metric("Heures Focus", f"{total_hours:.1h} h")
-    col3.metric("Intensité Moyenne", f"{df_week['intensity'].mean():.1f} / 5")
-
-    # --- GRAPHIQUE ---
-    st.write("### 📈 Analyse de la Semaine")
-    # On groupe par date pour avoir un score quotidien cumulé
-    daily_df = df_week.groupby('date')['score'].sum().reset_index()
-    
-    fig = px.area(daily_df, x='date', y='score', 
-                  title="Évolution de la Productivité",
-                  color_discrete_sequence=['#00d4ff'])
-    fig.update_layout(template="plotly_dark", hovermode="x unified")
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- LOGS ET MODIFICATIONS ---
-    st.write("### 📝 Historique des Sessions")
-    edited_df = st.data_editor(df.sort_values('date', ascending=False), 
-                               num_rows="dynamic",
-                               column_config={
-                                   "score": st.column_config.NumberColumn(format="%.1f")
-                               })
-    
-    if st.button("Sauvegarder les modifications"):
-        conn = sqlite3.connect('flow_data.db')
-        edited_df.to_sql('sessions', conn, if_exists='replace', index=False)
-        conn.close()
-        st.rerun()
-
-else:
-    st.info("Aucune donnée enregistrée. Commence ta première session de Deep Work !")
+    df_edit = get_data()
+    if not df_edit.empty:
+        # st.data_editor permet de modifier/supprimer en direct
+        edited_df = st.data_editor(df_edit, num_rows="dynamic", use_container_width=True, hide_index=True)
+        
+        if st.button("💾 Sauvegarder les modifications dans la base de données"):
+            with sqlite3.connect(DB_NAME) as conn:
+                edited_df.to_sql('flow_sessions', conn, if_exists='replace', index=False)
+            st.success("Base de données mise à jour !")
+    else:
+        st.write("Aucune donnée à modifier.")
